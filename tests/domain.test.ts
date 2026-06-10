@@ -123,6 +123,38 @@ describe("training scoring domain", () => {
 });
 
 describe("pao and persistence domain", () => {
+  it("uses the curated Chinese PAO table as the default template", () => {
+    const mappings = resolvePaoMappings(DEFAULT_PAO_TEMPLATE);
+
+    expect(DEFAULT_PAO_TEMPLATE.mappings).toHaveLength(54);
+    expect(mappings.get("spade_A")).toMatchObject({
+      persona: "秦始皇",
+      action: "盖玉玺统一天下",
+      object: "传国玉玺",
+      source: "template",
+    });
+    expect(mappings.get("heart_10")).toMatchObject({
+      persona: "苏轼",
+      action: "写《江城子》悼亡",
+      object: "词卷",
+    });
+    expect(mappings.get("diamond_K")).toMatchObject({
+      persona: "比尔·盖茨",
+      action: "敲 Windows 代码",
+      object: "Windows 电脑",
+    });
+    expect(mappings.get("club_Q")).toMatchObject({
+      persona: "黄蓉",
+      action: "打狗棒布阵",
+      object: "打狗棒",
+    });
+    expect(mappings.get("joker_big")).toMatchObject({
+      persona: "巨人",
+      action: "变出",
+      object: "礼帽",
+    });
+  });
+
   it("resolves PAO overrides without mutating the default template", () => {
     const mappings = resolvePaoMappings(DEFAULT_PAO_TEMPLATE, [
       {
