@@ -81,7 +81,7 @@
 4. 用户通过点选牌面或拖拽排序还原顺序。
 5. 系统评分：正确牌、顺序错位、遗漏、重复、耗时。
 
-13 张是第一版的起点，因为它接近斗地主单个玩家手牌规模，也足够短，适合建立信心。
+13 张是第一版的起点，因为它足够短，适合建立编码流程和训练信心。它不是为了对应某个具体游戏的固定手牌数量；斗地主、升级、掼蛋等游戏的手牌规模会在后续 Game Profile 中单独建模。
 
 ### 4.3 阶段 3：27 / 36 张中长序列
 
@@ -163,6 +163,20 @@
 
 系统可以先开放手动选择难度，后续再做自动晋级。
 
+### 5.3 难度配置校验
+
+难度配置必须经过 domain 层校验，避免 UI 组合出无效训练。
+
+典型规则：
+
+- `includeJokers = false` 时，一副牌最大 `cardCount` 为 52。
+- `deckCount = 1` 时，最大 `cardCount` 为 54；`deckCount = 2` 时最大为 108。
+- `pao_familiarity` 不需要 `recallInputMode = sort_cards`。
+- `remaining_cards` 需要有可计算的完整牌组和已出牌集合。
+- Game Profile 可以限制或覆盖默认牌组，例如掼蛋默认两副牌。
+
+校验结果应返回结构化错误，而不是只在 UI 中禁用按钮。这样未来 CLI、测试和其他入口都能复用相同规则。
+
 ## 6. 功能需求
 
 ### 6.1 今日训练
@@ -193,6 +207,8 @@
 - 是否包含大小王。
 - 回忆方式。
 - 是否优先抽取薄弱牌。
+- 游戏 Profile。
+- 牌组规格。
 
 ### 6.3 PAO 表
 
@@ -271,11 +287,34 @@
 
 ## 7. 数据模型
 
-### 7.1 CardFace
+### 7.1 建模原则
+
+数据模型需要服务长期演进，而不是只服务第一版 UI。
+
+核心原则：
+
+- 牌面和实体牌分离：`CardFace` 表示“黑桃 A”，`CardInstance` 表示“第 1 副牌里的黑桃 A”。
+- 题目定义、训练实例、用户作答、评分结果分离：这样后续可以升级评分算法、回放训练过程、重算历史结果。
+- PAO 默认模板和用户修改分离：默认表升级时不能覆盖用户自定义内容。
+- Game Profile 作为配置对象，而不是散落在代码里的字符串判断。
+- 出牌流使用事件模型，避免后续加入斗地主、掼蛋、升级时重写训练核心。
+
+### 7.2 DeckSpec
+
+`DeckSpec` 描述牌组规格。第一版 UI 默认使用一副 54 张牌，但 domain 层应支持两副牌。
+
+```ts
+interface DeckSpec {
+  deckCount: number;       // MVP UI 默认 1，后续可为 2
+  includeJokers: boolean;
+  includeSuits: Suit[];
+  includeRanks: Rank[];
+}
+```
+
+### 7.3 CardFace
 
 表示牌面，不代表实体牌。
-
-字段：
 
 ```ts
 type Suit = "spade" | "heart" | "diamond" | "club" | "joker";
@@ -293,9 +332,9 @@ interface CardFace {
 }
 ```
 
-### 7.2 CardInstance
+### 7.4 CardInstance
 
-表示一张实体牌。第一版只有 deck_1，未来两副牌会有 deck_2。
+表示一张实体牌。第一版只有 `deck_1`，未来两副牌会有 `deck_2`。
 
 ```ts
 interface CardInstance {
@@ -305,57 +344,179 @@ interface CardInstance {
 }
 ```
 
-### 7.3 PaoMapping
+UI 在多数训练中可以只展示牌面；但存储、评分和剩余牌计算必须使用 `CardInstance.id`，避免两副牌时相同 `faceId` 无法区分。
 
-PAO 映射绑定在 CardFace 上，而不是 CardInstance 上。这样两副牌里的两张黑桃 A 可以共用同一个 PAO。
+### 7.5 PAO 模板与用户覆盖
+
+PAO 映射绑定在 `CardFace` 上，而不是 `CardInstance` 上。两副牌里的两张黑桃 A 默认共享同一个 PAO。
+
+默认映射不直接写入用户数据。系统保存默认模板，用户只保存覆盖项。
 
 ```ts
-interface PaoMapping {
+interface PaoTemplate {
+  id: string;          // default_zh_v1
+  version: number;
+  mappings: PaoTemplateEntry[];
+}
+
+interface PaoTemplateEntry {
+  faceId: string;
+  persona: string;
+  action: string;
+  object: string;
+}
+
+interface PaoMappingOverride {
+  faceId: string;
+  persona?: string;
+  action?: string;
+  object?: string;
+  note?: string;
+  templateId: string;
+  templateVersion: number;
+  updatedAt: string;
+}
+
+interface ResolvedPaoMapping {
   faceId: string;
   persona: string;
   action: string;
   object: string;
   note?: string;
-  isCustomized: boolean;
-  updatedAt: string;
+  source: "template" | "custom";
 }
 ```
 
-### 7.4 TrainingConfig
+恢复默认值时删除对应 `PaoMappingOverride`，再从当前模板解析。默认模板升级时，未修改的牌面自动使用新模板；已修改的牌面保持用户覆盖。
+
+### 7.6 GameProfile
+
+Game Profile 用配置对象表达训练重点，而不是只用字符串枚举。
 
 ```ts
-type TrainingMode = "pao_familiarity" | "sequence_recall" | "remaining_cards" | "mixed";
-type RecallInputMode = "reveal" | "select_cards" | "sort_cards";
+type GameProfileId = "generic" | "doudizhu" | "shengji" | "guandan";
 
-interface TrainingConfig {
-  mode: TrainingMode;
-  deckCount: number;       // MVP 固定为 1
-  cardCount: number;       // 13 / 27 / 36 / 54
-  includeJokers: boolean;
-  revealSecondsPerCard?: number;
-  recallInputMode: RecallInputMode;
-  focusWeakCards: boolean;
-  gameProfile: "generic" | "doudizhu" | "shengji" | "guandan";
+interface GameProfile {
+  id: GameProfileId;
+  displayName: string;
+  defaultDeckSpec: DeckSpec;
+  keyRanks: Rank[];
+  keyFaceIds: string[];
+  enabledQuestionTypes: RemainingCardQuestionType[];
+  scoringWeights: {
+    sequence: number;
+    remainingCards: number;
+    keyCards: number;
+  };
 }
 ```
 
-### 7.5 TrainingSession
+MVP 只需要实现 `generic`，但训练生成、题目生成和评分都通过 `GameProfile` 读取配置。后续加入斗地主、升级、掼蛋时，应新增 profile 配置和必要的题目生成器，而不是在通用逻辑里堆分支。
+
+### 7.7 ExerciseDefinition
+
+`ExerciseDefinition` 表示一次训练题目的定义。它描述“要生成什么题”，不保存用户作答。
+
+```ts
+type TrainingMode =
+  | "pao_familiarity"
+  | "sequence_recall"
+  | "remaining_cards"
+  | "mixed";
+
+type RecallInputMode = "reveal" | "select_cards" | "sort_cards";
+
+interface BaseExerciseDefinition {
+  id: string;
+  mode: TrainingMode;
+  deckSpec: DeckSpec;
+  gameProfileId: GameProfileId;
+  focusWeakCards: boolean;
+}
+
+interface PaoFamiliarityDefinition extends BaseExerciseDefinition {
+  mode: "pao_familiarity";
+  cardCount: number;
+  revealAnswerManually: boolean;
+}
+
+interface SequenceRecallDefinition extends BaseExerciseDefinition {
+  mode: "sequence_recall";
+  cardCount: number;
+  revealSecondsPerCard?: number;
+  recallInputMode: Extract<RecallInputMode, "select_cards" | "sort_cards">;
+}
+
+interface RemainingCardsDefinition extends BaseExerciseDefinition {
+  mode: "remaining_cards";
+  seenCardCount: number;
+  revealSecondsPerCard?: number;
+  questionTypes: RemainingCardQuestionType[];
+}
+
+interface MixedExerciseDefinition extends BaseExerciseDefinition {
+  mode: "mixed";
+  steps: Array<SequenceRecallDefinition | RemainingCardsDefinition>;
+}
+
+type ExerciseDefinition =
+  | PaoFamiliarityDefinition
+  | SequenceRecallDefinition
+  | RemainingCardsDefinition
+  | MixedExerciseDefinition;
+```
+
+这样可以避免一个扁平 `TrainingConfig` 同时承载所有模式，减少未来无效字段和条件分支。
+
+### 7.8 TrainingSession
+
+`TrainingSession` 表示一次训练实例。它保存题目快照，保证用户之后查看历史时，不受默认 PAO、Game Profile 或生成算法更新影响。
 
 ```ts
 interface TrainingSession {
   id: string;
-  config: TrainingConfig;
+  definition: ExerciseDefinition;
   generatedCards: CardInstance[];
+  playEvents?: PlayEvent[];
+  generatedQuestions?: RemainingCardQuestion[];
+  generatorVersion: string;
   startedAt: string;
   completedAt?: string;
-  result?: TrainingResult;
+  attempt?: ExerciseAttempt;
+  scoringResult?: ScoringResult;
 }
 ```
 
-### 7.6 TrainingResult
+### 7.9 ExerciseAttempt
+
+`ExerciseAttempt` 保存用户原始作答，不只保存聚合后的正确 / 错误集合。
 
 ```ts
-interface TrainingResult {
+interface ExerciseAttempt {
+  sessionId: string;
+  actualCardIds?: string[];
+  answerResults?: RemainingCardAnswer[];
+  familiarityMarks?: PaoFamiliarityMark[];
+  startedAt: string;
+  submittedAt: string;
+}
+
+interface PaoFamiliarityMark {
+  cardId: string;
+  mark: "remembered" | "vague" | "forgotten";
+  elapsedMs: number;
+}
+```
+
+保存原始作答后，系统可以在评分算法升级时重算历史，也可以做更细的错位分析。
+
+### 7.10 ScoringResult
+
+`ScoringResult` 是评分器输出。它可以缓存展示所需的聚合结果，但不应替代原始作答。
+
+```ts
+interface ScoringResult {
+  scoringVersion: string;
   accuracy: number;
   elapsedMs: number;
   correctCardIds: string[];
@@ -363,28 +524,97 @@ interface TrainingResult {
   extraCardIds: string[];
   misplacedCardIds: string[];
   averageDisplacement?: number;
+  positionResults?: PositionResult[];
   questionResults?: RemainingCardQuestionResult[];
+}
+
+interface PositionResult {
+  expectedCardId: string;
+  actualCardId?: string;
+  expectedIndex: number;
+  actualIndex?: number;
+  status: "correct" | "missing" | "misplaced" | "extra";
+  displacement?: number;
 }
 ```
 
-训练结果使用 CardInstance 的 id，而不是只使用 faceId。这样未来两副牌时，可以准确表达“两张黑桃 A 中出错了一张”。如果 UI 只需要展示牌面，可以在展示层再从 cardId 汇总到 faceId。
-
-### 7.7 RemainingCardQuestionResult
+### 7.11 剩余牌题目与作答
 
 ```ts
-interface RemainingCardQuestionResult {
-  questionType:
-    | "card_seen"
-    | "card_remaining"
-    | "rank_remaining_count"
-    | "key_card_remaining"
-    | "four_of_kind_possible";
+type RemainingCardQuestionType =
+  | "card_seen"
+  | "card_remaining"
+  | "rank_remaining_count"
+  | "key_card_remaining"
+  | "four_of_kind_possible";
+
+interface RemainingCardQuestion {
+  id: string;
+  questionType: RemainingCardQuestionType;
   prompt: string;
+  targetFaceId?: string;
+  targetRank?: Rank;
+  expectedAnswer: string | number | boolean;
+}
+
+interface RemainingCardAnswer {
+  questionId: string;
+  actualAnswer: string | number | boolean;
+  answeredAt: string;
+}
+
+interface RemainingCardQuestionResult {
+  questionId: string;
+  questionType: RemainingCardQuestionType;
   expectedAnswer: string | number | boolean;
   actualAnswer: string | number | boolean;
   isCorrect: boolean;
 }
 ```
+
+### 7.12 PlayEvent
+
+`PlayEvent` 表示“出牌流”中的一次事件。即使第一版没有真实玩家，也应该用事件表达已出牌，而不是只保存一条扁平牌序。
+
+```ts
+type PlayPattern =
+  | "single"
+  | "pair"
+  | "triple"
+  | "straight"
+  | "bomb"
+  | "unknown";
+
+interface PlayEvent {
+  id: string;
+  roundIndex: number;
+  seat?: "self" | "left" | "partner" | "right" | string;
+  cardIds: string[];
+  pattern: PlayPattern;
+  shownAt?: string;
+}
+```
+
+这样未来可以加入“谁出了什么牌”“这一轮出牌类型是什么”“是否可能还有炸弹”等实战问题。
+
+### 7.13 CardSkillStats
+
+用于支持薄弱牌抽样和进度统计。
+
+```ts
+interface CardSkillStats {
+  faceId: string;
+  familiarityLevel: number;  // 0-100
+  seenCount: number;
+  errorCount: number;
+  averageReactionMs?: number;
+  lastSeenAt?: string;
+  lastErrorAt?: string;
+  reviewWeight: number;
+}
+```
+
+`focusWeakCards` 应基于 `CardSkillStats` 计算抽样权重，而不是在生成器里写临时规则。
 
 ## 8. 架构设计
 
@@ -398,7 +628,11 @@ src/
     cards/
       cardFaces.ts
       deck.ts
+      deckSpec.ts
       cardTypes.ts
+    gameProfiles/
+      genericProfile.ts
+      gameProfileTypes.ts
     pao/
       defaultPaoMappings.ts
       paoTypes.ts
@@ -406,11 +640,15 @@ src/
     training/
       trainingTypes.ts
       difficulty.ts
-      sequenceGenerator.ts
-      sequenceScoring.ts
+      exerciseDefinitions.ts
+      exerciseGenerator.ts
+      playEvents.ts
+      scoringStrategies.ts
       remainingCards.ts
+      cardSkillStats.ts
   storage/
     localStore.ts
+    migrations.ts
     repositories.ts
   app/
     routes.tsx
@@ -431,10 +669,14 @@ Domain 层不依赖 UI。
 职责：
 
 - 定义牌、牌组、PAO、训练配置和训练结果。
-- 生成训练牌序。
-- 计算顺序回忆评分。
+- 定义 Game Profile 和 DeckSpec。
+- 生成训练题目、牌序、出牌事件和剩余牌问题。
+- 校验 ExerciseDefinition。
+- 计算顺序回忆、剩余牌判断、PAO 熟悉度评分。
 - 生成剩余牌判断题。
 - 计算训练统计。
+
+Domain 层应通过纯函数或无 UI 依赖的 service 暴露能力。UI 不应直接拼接牌组、不应直接计算剩余牌、不应直接写评分规则。
 
 ### 8.3 Storage 层
 
@@ -445,8 +687,24 @@ Domain 层不依赖 UI。
 - 保存用户修改过的 PAO 映射。
 - 保存训练历史。
 - 保存用户当前难度和偏好。
+- 保存 CardSkillStats。
+- 保存本地数据 schemaVersion。
 
 推荐使用一个轻量 repository 接口封装 LocalStorage 或 IndexedDB。第一版数据量很小，可以先用 LocalStorage；如果后续需要保存大量训练历史，再切换 IndexedDB。
+
+长期维护重点不是具体存储介质，而是 schema 版本和迁移：
+
+```ts
+interface PersistedAppState {
+  schemaVersion: number;
+  paoOverrides: PaoMappingOverride[];
+  sessions: TrainingSession[];
+  cardSkillStats: CardSkillStats[];
+  userPreferences: UserPreferences;
+}
+```
+
+每次修改持久化结构时，需要提供 migration。这样后续增加两副牌、Game Profile、评分版本时，不需要让用户清空本地数据。
 
 ### 8.4 UI 层
 
@@ -461,28 +719,46 @@ UI 不直接计算评分，应调用 domain 层函数。
 
 ## 9. 核心算法
 
-### 9.1 牌序生成
+### 9.1 训练生成流程
 
-输入：TrainingConfig。
+输入：`ExerciseDefinition`、`GameProfile`、`CardSkillStats[]`。
 
-输出：CardInstance[]。
+输出：`TrainingSession`。
 
-规则：
+流程：
 
-1. 根据 deckCount 创建牌实例。
-2. 根据 includeJokers 过滤大小王。
-3. 洗牌。
-4. 截取 cardCount。
-5. 如果 focusWeakCards 为 true，则提高薄弱牌抽样权重。
+1. 校验 `ExerciseDefinition` 和 `DeckSpec`。
+2. 根据 `DeckSpec` 创建完整 `CardInstance[]`。
+3. 根据训练模式选择对应 generator。
+4. 如果 `focusWeakCards = true`，根据 `CardSkillStats.reviewWeight` 提高薄弱牌抽样权重。
+5. 生成题目快照：
+   - 顺序训练生成 `generatedCards`。
+   - 剩余牌训练生成 `playEvents` 和 `generatedQuestions`。
+   - 混合训练生成多个 step 的题目快照。
+6. 写入 `generatorVersion`。
 
-### 9.2 顺序评分
+题目生成器必须输出可复盘的数据快照，不能只把随机种子交给 UI。这样后续即使生成算法变化，历史训练仍能正确展示。
+
+### 9.2 ExerciseDefinition 校验
+
+校验器输入 `ExerciseDefinition`，输出结构化错误列表。
+
+必须覆盖：
+
+1. `cardCount` 或 `seenCardCount` 不超过 `DeckSpec` 最大牌数。
+2. 关闭大小王后不能生成包含大小王的题目。
+3. 不同 `mode` 只能使用对应配置字段。
+4. Game Profile 的默认 `DeckSpec` 和用户覆盖配置合并后仍然有效。
+5. 剩余牌题型必须能从当前牌组和出牌流计算答案。
+
+### 9.3 顺序评分
 
 输入：
 
-- expected: CardInstance[]
-- actual: CardInstance[]
+- `TrainingSession.generatedCards`
+- `ExerciseAttempt.actualCardIds`
 
-输出 TrainingResult。
+输出：`ScoringResult`。
 
 评分逻辑：
 
@@ -490,7 +766,9 @@ UI 不直接计算评分，应调用 domain 层函数。
 2. 找出遗漏牌。
 3. 找出重复或多选牌。
 4. 对出现但位置错误的牌计算错位距离。
-5. 计算 accuracy。
+5. 生成 `PositionResult[]`。
+6. 计算 `accuracy`。
+7. 写入 `scoringVersion`。
 
 第一版 accuracy 可以使用：
 
@@ -498,23 +776,38 @@ UI 不直接计算评分，应调用 domain 层函数。
 accuracy = 位置正确数量 / expected.length
 ```
 
-后续可以加入相对顺序分。
+后续可以加入相对顺序分，但必须通过新的 `scoringVersion` 区分，避免历史分数含义变化。
 
-### 9.3 剩余牌计算
+### 9.4 剩余牌计算
 
 输入：
 
-- fullDeck: CardInstance[]
-- seenCards: CardInstance[]
+- `DeckSpec`
+- `fullDeck: CardInstance[]`
+- `playEvents: PlayEvent[]`
 
 输出：
 
-- remainingCards。
-- remainingCountByRank。
-- keyCardStatus。
-- fourOfKindPossibleByRank。
+- `remainingCards`。
+- `remainingCountByFaceId`。
+- `remainingCountByRank`。
+- `keyCardStatus`。
+- `fourOfKindPossibleByRank`。
 
-注意：第一版一副牌时，每个 CardFace 最多出现一次；未来两副牌时，必须按 CardInstance 计数，不能只用 faceId 布尔值。
+注意：第一版一副牌时，每个 `CardFace` 最多出现一次；未来两副牌时，必须按 `CardInstance` 计数，再汇总到 `faceId` 或 `rank`。不能只用 `faceId -> boolean` 表示是否出现。
+
+### 9.5 CardSkillStats 更新
+
+每次训练完成后，根据 `ExerciseAttempt` 和 `ScoringResult` 更新 `CardSkillStats`。
+
+规则：
+
+1. PAO 熟悉训练根据“记住 / 模糊 / 不记得”和反应时间更新熟悉度。
+2. 顺序训练中遗漏、错位、重复选择的牌增加错误权重。
+3. 剩余牌判断中涉及的目标牌或目标点数更新统计。
+4. `reviewWeight` 由熟悉度、错误次数、最近错误时间和反应时间共同计算。
+
+抽样算法只读取 `reviewWeight`，不直接耦合具体统计公式。这样后续可以调整复习策略，而不影响训练生成接口。
 
 ## 10. 默认 PAO 映射策略
 
@@ -527,6 +820,14 @@ accuracy = 位置正确数量 / expected.length
 
 第一版可以先内置一套可用但不追求完美的默认表。产品重点是训练路径，不是默认 PAO 的文学质量。
 
+默认 PAO 需要按模板版本管理：
+
+- 系统内置 `PaoTemplate`。
+- 用户只保存 `PaoMappingOverride`。
+- 恢复默认值等于删除覆盖项。
+- 模板升级时，未自定义牌面自动使用新默认值。
+- 已自定义牌面保留用户覆盖，避免升级覆盖个人记忆体系。
+
 后续可以支持：
 
 - 批量导入 / 导出 PAO 表。
@@ -536,20 +837,29 @@ accuracy = 位置正确数量 / expected.length
 
 ## 11. 未来扩展：两副牌
 
-两副牌扩展时，主要变化在 CardInstance 和训练计数。
+两副牌扩展时，主要变化在 `DeckSpec`、`CardInstance`、剩余牌计数和 Game Profile 默认配置。
 
 需要保持：
 
 - PAO 仍绑定 CardFace。
 - 两张相同牌面共享 PAO。
-- 出现与剩余判断必须按实例计数。
+- 出现与剩余判断必须按 `CardInstance` 计数，再按 `faceId` 或 `rank` 汇总展示。
 - UI 在必要时显示“第 1 副 / 第 2 副”，但训练场景中通常不要求用户区分实体来源。
+- `TrainingSession` 必须保存题目中的具体 `CardInstance.id`，否则历史训练在两副牌下无法复盘。
 
 对于掼蛋和升级，常见需求不是记住“第几副的黑桃 A”，而是记住“黑桃 A 已经出了几张，还剩几张”。
 
 ## 12. 未来扩展：Game Profile
 
-Game Profile 用来调整训练重点，而不是一开始实现完整规则。
+Game Profile 用来调整训练重点，而不是一开始实现完整规则。它应该是配置对象，至少包含默认牌组、关键牌、启用题型和评分权重。
+
+新增 Profile 的原则：
+
+1. 先增加配置和题型生成能力。
+2. 再增加必要的出牌组合识别。
+3. 最后才考虑完整规则引擎。
+
+不要在通用训练代码中写大量 `if profile === "guandan"` 之类的分支。应通过 `GameProfile` 和专用 generator / scorer 扩展。
 
 ### 12.1 Generic
 
@@ -558,6 +868,7 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 - 顺序。
 - 剩余牌。
 - 点数计数。
+- 默认一副 54 张。
 
 ### 12.2 斗地主
 
@@ -568,6 +879,7 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 - A / K。
 - 炸弹可能性。
 - 单张和对子剩余。
+- 默认一副 54 张；后续可以加入三人座位和地主牌上下文。
 
 ### 12.3 升级
 
@@ -577,6 +889,7 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 - 级牌。
 - 副牌花色断门。
 - 对子和拖拉机。
+- 默认两副牌；主牌和级牌应作为 Profile 参数，不应写死。
 
 ### 12.4 掼蛋
 
@@ -586,6 +899,7 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 - 级牌。
 - 炸弹。
 - 同点数剩余数量。
+- 默认两副牌；级牌应作为 Profile 参数，不应写死。
 
 ## 13. 页面结构
 
@@ -636,10 +950,17 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 
 - 一副牌生成 54 张唯一实例。
 - 关闭大小王后生成 52 张。
+- 两副牌生成 108 张实例，且相同 faceId 有两个 CardInstance。
 - cardCount 截取正确。
+- ExerciseDefinition 校验能拦截无效 cardCount、无效题型和无效牌组配置。
 - 顺序评分能识别正确、错位、遗漏、重复。
 - 剩余牌计算正确。
-- 两副牌模式下相同 faceId 的计数正确。
+- 两副牌模式下相同 faceId 的剩余计数正确。
+- PlayEvent 可以正确汇总成已出牌和剩余牌状态。
+- PaoTemplate + PaoMappingOverride 能正确解析最终 PAO。
+- 默认模板升级不会覆盖用户自定义 PAO。
+- CardSkillStats 能根据训练结果更新薄弱牌权重。
+- schema migration 能把旧版本本地数据迁移到当前结构。
 
 ### 14.2 UI 行为测试
 
@@ -658,17 +979,22 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 - UI 直接写评分逻辑，导致训练模式之间重复和不一致。
 - 默认 PAO 修改后覆盖用户自定义配置。
 - 训练记录结构随功能扩展失控。
+- Game Profile 退化成散落在代码各处的字符串判断。
+- 评分算法升级后历史训练结果含义不一致。
 
 ## 15. MVP 实施顺序建议
 
 1. 建立牌和牌组 domain 模型。
-2. 建立默认 PAO 表和编辑存储。
-3. 实现 13 张顺序记忆训练。
-4. 实现顺序评分和结果页。
-5. 实现剩余牌判断训练。
-6. 实现训练历史和基础统计。
-7. 增加 27 / 36 / 54 张难度。
-8. 补充两副牌 domain 测试，不一定开放 UI。
+2. 建立 DeckSpec、GameProfile、ExerciseDefinition 校验。
+3. 建立默认 PAO 模板、用户覆盖和编辑存储。
+4. 实现 TrainingSession、ExerciseAttempt、ScoringResult 的存储结构。
+5. 实现 13 张顺序记忆训练。
+6. 实现顺序评分和结果页。
+7. 实现 PlayEvent 和剩余牌判断训练。
+8. 实现 CardSkillStats、训练历史和基础统计。
+9. 增加 27 / 36 / 54 张难度。
+10. 补充两副牌 domain 测试，不一定开放 UI。
+11. 补充 schemaVersion 和 migration 测试。
 
 ## 16. 成功标准
 
@@ -681,6 +1007,7 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 5. 在训练后看到自己错在哪里。
 6. 练习判断剩余牌和关键牌状态。
 7. 后续能在不重写核心模型的情况下扩展到两副牌。
+8. 训练历史保留原始作答和评分版本，后续可以复盘或重算。
 
 ## 17. 当前决策记录
 
@@ -690,4 +1017,8 @@ Game Profile 用来调整训练重点，而不是一开始实现完整规则。
 - 训练目标：顺序记忆和剩余牌判断都要。
 - 难度方式：从 13 张开始逐步增加强度。
 - PAO 策略：系统提供默认映射，用户可以修改。
-- 游戏规则：第一版不做完整规则引擎，先做通用训练和游戏 Profile 预留。
+- PAO 存储：默认模板和用户覆盖分离，避免升级覆盖自定义映射。
+- 训练数据：题目定义、训练实例、用户作答、评分结果分离。
+- 游戏规则：第一版不做完整规则引擎，先做通用训练和 Game Profile 配置对象。
+- 出牌流：用 PlayEvent 表达，避免未来扩展真实牌局时重写数据结构。
+- 本地数据：需要 schemaVersion 和 migration，避免长期使用后无法升级。
