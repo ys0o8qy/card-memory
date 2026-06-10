@@ -500,6 +500,8 @@ function PaoDemo({
           <Metric label="Action" value={mapping?.action ?? "-"} />
           <Metric label="Object" value={mapping?.object ?? "-"} />
         </div>
+        {mapping?.scene ? <p className="notice compact-notice">{mapping.scene}</p> : null}
+        {mapping?.reason ? <p className="quiet compact-copy">{mapping.reason}</p> : null}
       </div>
       <div className="actions">
         {isLast ? (
@@ -752,9 +754,12 @@ function PaoTable({
           <thead>
             <tr>
               <th>牌</th>
+              <th>领域</th>
+              <th>钩子</th>
               <th>人物</th>
               <th>动作</th>
               <th>物品</th>
+              <th>场景</th>
               <th>来源</th>
               <th>
                 <span className="sr-only">操作</span>
@@ -767,9 +772,12 @@ function PaoTable({
               return (
                 <tr key={entry.faceId}>
                   <td>{labelForFace(entry.faceId)}</td>
+                  <td>{mapping?.domain ?? "-"}</td>
+                  <td>{mapping?.numberHook ?? "-"}</td>
                   <td>{mapping?.persona}</td>
                   <td>{mapping?.action}</td>
                   <td>{mapping?.object}</td>
+                  <td className="scene-cell">{mapping?.scene ?? "-"}</td>
                   <td>{mapping?.source === "custom" ? "已修改" : "默认"}</td>
                   <td>
                     <button
