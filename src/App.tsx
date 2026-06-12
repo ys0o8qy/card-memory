@@ -31,16 +31,16 @@ import {
   type TrainingSession,
 } from "./domain/storage";
 
-type AppView = "today" | "train" | "pao" | "progress";
+export type AppView = "today" | "train" | "pao" | "progress";
 
-type RemainingQuestion = ReturnType<typeof buildRemainingQuestion>;
+export type RemainingQuestion = ReturnType<typeof buildRemainingQuestion>;
 
-type EditorReturn =
+export type EditorReturn =
   | { type: "view"; view: AppView }
   | { type: "demo"; cards: CardInstance[]; index: number }
   | { type: "result"; cards: CardInstance[]; result: ScoringResult };
 
-type ExerciseState =
+export type ExerciseState =
   | { type: "none" }
   | { type: "pao-demo"; cards: CardInstance[]; index: number }
   | { type: "sequence-study"; cards: CardInstance[] }
@@ -375,7 +375,7 @@ function App() {
   );
 }
 
-function TodayView({
+export function TodayView({
   repository,
   appState,
   onStartDemo,
@@ -433,7 +433,7 @@ function TodayView({
   );
 }
 
-function TrainView({
+export function TrainView({
   onStartDemo,
   onStartSequence,
   onStartRemaining,
@@ -470,7 +470,7 @@ function TrainView({
   );
 }
 
-function PaoDemo({
+export function PaoDemo({
   exercise,
   mappings,
   onNext,
@@ -521,7 +521,7 @@ function PaoDemo({
   );
 }
 
-function SequenceStudy({
+export function SequenceStudy({
   cards,
   onStartRecall,
 }: {
@@ -549,7 +549,7 @@ function SequenceStudy({
   );
 }
 
-function SequenceRecall({
+export function SequenceRecall({
   deck,
   exercise,
   onRecallChange,
@@ -612,7 +612,7 @@ function SequenceRecall({
   );
 }
 
-function SequenceResult({
+export function SequenceResult({
   exercise,
   onAgain,
   onPaoTable,
@@ -672,7 +672,7 @@ function SequenceResult({
   );
 }
 
-function RemainingQuestionScreen({
+export function RemainingQuestionScreen({
   exercise,
   onAnswer,
 }: {
@@ -707,7 +707,7 @@ function RemainingQuestionScreen({
   );
 }
 
-function RemainingResult({
+export function RemainingResult({
   exercise,
   onAgain,
   onToday,
@@ -738,7 +738,7 @@ function RemainingResult({
   );
 }
 
-function PaoTable({
+export function PaoTable({
   mappings,
   onEdit,
 }: {
@@ -798,13 +798,13 @@ function PaoTable({
   );
 }
 
-type PaoEditorValue = {
+export type PaoEditorValue = {
   persona: string;
   action: string;
   object: string;
 };
 
-function PaoEditor({
+export function PaoEditor({
   faceId,
   mapping,
   onCancel,
@@ -896,7 +896,7 @@ function Field({
   );
 }
 
-function ProgressView({
+export function ProgressView({
   repository,
   appState,
 }: {
