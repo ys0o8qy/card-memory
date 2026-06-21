@@ -6,6 +6,9 @@ import {
 } from "../src/domain/cards";
 import {
   DEFAULT_PAO_TEMPLATE,
+  buildPaoLadderItems,
+  getPaoLadderLevelForRank,
+  PAO_LADDER_LEVELS,
   resolvePaoMappings,
 } from "../src/domain/pao";
 import {
@@ -174,6 +177,42 @@ describe("pao and persistence domain", () => {
       DEFAULT_PAO_TEMPLATE.mappings.find((entry) => entry.faceId === "spade_A")
         ?.persona,
     ).not.toBe("自定义人物");
+    expect(mappings.get("spade_A")).toMatchObject({
+      domain: "权",
+      numberHook: "第一 / 开端 / 顶级",
+    });
+  });
+
+  it("assigns standard ranks to the three PAO ladder levels", () => {
+    expect(getPaoLadderLevelForRank("3")?.id).toBe("strong-hooks");
+    expect(getPaoLadderLevelForRank("10")?.id).toBe("strong-hooks");
+    expect(getPaoLadderLevelForRank("A")?.id).toBe("court-cards");
+    expect(getPaoLadderLevelForRank("K")?.id).toBe("court-cards");
+    expect(getPaoLadderLevelForRank("2")?.id).toBe("weak-hook-fill");
+    expect(getPaoLadderLevelForRank("9")?.id).toBe("weak-hook-fill");
+    expect(getPaoLadderLevelForRank("small_joker")).toBeUndefined();
+  });
+
+  it("builds ladder items filtered by level without using jokers", () => {
+    const mappings = resolvePaoMappings(DEFAULT_PAO_TEMPLATE);
+
+    const levelSizes = PAO_LADDER_LEVELS.map((level) =>
+      buildPaoLadderItems(mappings, level.id),
+    );
+
+    expect(levelSizes.map((items) => items.length)).toEqual([20, 16, 16]);
+    expect(levelSizes.flat().some((item) => item.faceId.startsWith("joker"))).toBe(
+      false,
+    );
+    expect(levelSizes[0].map((item) => item.rank)).toEqual(
+      expect.arrayContaining(["3", "6", "7", "8", "10"]),
+    );
+    expect(levelSizes[1].map((item) => item.rank)).toEqual(
+      expect.arrayContaining(["A", "J", "Q", "K"]),
+    );
+    expect(levelSizes[2].map((item) => item.rank)).toEqual(
+      expect.arrayContaining(["2", "4", "5", "9"]),
+    );
   });
 
   it("stores overrides, sessions, and preferences through a repository", () => {

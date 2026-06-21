@@ -64,6 +64,7 @@ export const TrainModes: Story = {
     <Frame>
       <TrainView
         onStartDemo={noop}
+        onStartLadder={noop}
         onStartRemaining={noop}
         onStartSequence={noop}
       />

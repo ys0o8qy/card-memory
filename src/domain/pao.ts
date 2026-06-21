@@ -1,4 +1,8 @@
-import { CARD_FACE_CATALOG } from "./cards";
+import {
+  CARD_FACE_CATALOG,
+  type Rank,
+  type StandardRank,
+} from "./cards";
 
 export interface PaoTemplateEntry {
   faceId: string;
@@ -28,6 +32,40 @@ export interface ResolvedPaoMapping extends PaoTemplateEntry {
   note?: string;
   source: "template" | "custom";
 }
+
+export interface PaoLadderLevel {
+  id: "strong-hooks" | "court-cards" | "weak-hook-fill";
+  name: string;
+  ranks: readonly StandardRank[];
+}
+
+export interface PaoLadderItem {
+  level: PaoLadderLevel;
+  faceId: string;
+  domain: NonNullable<PaoTemplateEntry["domain"]>;
+  rank: StandardRank;
+  numberHook: string;
+  persona: string;
+  reason?: string;
+}
+
+export const PAO_LADDER_LEVELS: readonly PaoLadderLevel[] = Object.freeze([
+  Object.freeze({
+    id: "strong-hooks",
+    name: "Level 1｜强钩子数字",
+    ranks: Object.freeze(["3", "6", "7", "8", "10"] satisfies StandardRank[]),
+  }),
+  Object.freeze({
+    id: "court-cards",
+    name: "Level 2｜角色牌",
+    ranks: Object.freeze(["A", "J", "Q", "K"] satisfies StandardRank[]),
+  }),
+  Object.freeze({
+    id: "weak-hook-fill",
+    name: "Level 3｜补全弱钩子",
+    ranks: Object.freeze(["2", "4", "5", "9"] satisfies StandardRank[]),
+  }),
+]);
 
 const CURATED_STANDARD_MAPPINGS = [
   {
@@ -610,17 +648,61 @@ export function resolvePaoMappings(
   }
 
   for (const override of overrides) {
+    const templateEntry = resolved.get(override.faceId);
     resolved.set(override.faceId, {
+      ...templateEntry,
       faceId: override.faceId,
+      domain: override.domain ?? templateEntry?.domain,
+      numberHook: override.numberHook ?? templateEntry?.numberHook,
       persona: override.persona,
       action: override.action,
       object: override.object,
+      reason: override.reason ?? templateEntry?.reason,
+      scene: override.scene ?? templateEntry?.scene,
       note: override.note,
       source: "custom",
     });
   }
 
   return resolved;
+}
+
+export function getPaoLadderLevelForRank(
+  rank: Rank,
+): PaoLadderLevel | undefined {
+  return PAO_LADDER_LEVELS.find((level) =>
+    level.ranks.includes(rank as StandardRank),
+  );
+}
+
+export function buildPaoLadderItems(
+  mappings: ReadonlyMap<string, ResolvedPaoMapping>,
+  levelId: PaoLadderLevel["id"],
+): PaoLadderItem[] {
+  const level = PAO_LADDER_LEVELS.find((candidate) => candidate.id === levelId);
+  if (!level) return [];
+
+  return CARD_FACE_CATALOG.faces.flatMap((face) => {
+    if (face.suit === "joker") return [];
+    if (!level.ranks.includes(face.rank as StandardRank)) return [];
+
+    const mapping = mappings.get(face.id);
+    if (!mapping?.domain || mapping.domain === "特殊" || !mapping.numberHook) {
+      return [];
+    }
+
+    return [
+      {
+        level,
+        faceId: face.id,
+        domain: mapping.domain,
+        rank: face.rank as StandardRank,
+        numberHook: mapping.numberHook,
+        persona: mapping.persona,
+        reason: mapping.reason,
+      },
+    ];
+  });
 }
 
 export function createPaoOverride(
