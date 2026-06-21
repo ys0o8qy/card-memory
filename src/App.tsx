@@ -11,9 +11,13 @@ import {
   type Rank,
 } from "./domain/cards";
 import {
+  PAO_LADDER_LEVELS,
+  buildPaoLadderItems,
   createPaoOverride,
   DEFAULT_PAO_TEMPLATE,
   resolvePaoMappings,
+  type PaoLadderItem,
+  type PaoLadderLevel,
   type ResolvedPaoMapping,
 } from "./domain/pao";
 import {
@@ -46,6 +50,23 @@ export type ExerciseState =
   | { type: "sequence-study"; cards: CardInstance[] }
   | { type: "sequence-recall"; cards: CardInstance[]; recall: string[] }
   | { type: "sequence-result"; cards: CardInstance[]; result: ScoringResult }
+  | {
+      type: "pao-ladder";
+      levelId: PaoLadderLevel["id"];
+      items: PaoLadderItem[];
+      index: number;
+      revealed: boolean;
+      remembered: number;
+      missed: number;
+    }
+  | {
+      type: "pao-ladder-result";
+      levelId: PaoLadderLevel["id"];
+      levelName: string;
+      total: number;
+      remembered: number;
+      missed: number;
+    }
   | {
       type: "remaining-question";
       deck: CardInstance[];
@@ -99,6 +120,48 @@ function App() {
     setExercise({
       type: "sequence-study",
       cards: shuffleCards(deck).slice(0, cardCount),
+    });
+  }
+
+  function startPaoLadder(levelId: PaoLadderLevel["id"]) {
+    const items = shuffleCards(buildPaoLadderItems(paoMappings, levelId));
+    setView("train");
+    setExercise({
+      type: "pao-ladder",
+      levelId,
+      items,
+      index: 0,
+      revealed: false,
+      remembered: 0,
+      missed: 0,
+    });
+  }
+
+  function answerPaoLadder(remembered: boolean) {
+    if (exercise.type !== "pao-ladder") return;
+
+    const nextRemembered = exercise.remembered + (remembered ? 1 : 0);
+    const nextMissed = exercise.missed + (remembered ? 0 : 1);
+    const nextIndex = exercise.index + 1;
+
+    if (nextIndex >= exercise.items.length) {
+      setExercise({
+        type: "pao-ladder-result",
+        levelId: exercise.levelId,
+        levelName: exercise.items[0]?.level.name ?? "阶梯训练",
+        total: exercise.items.length,
+        remembered: nextRemembered,
+        missed: nextMissed,
+      });
+      return;
+    }
+
+    setExercise({
+      ...exercise,
+      index: nextIndex,
+      revealed: false,
+      remembered: nextRemembered,
+      missed: nextMissed,
     });
   }
 
@@ -275,6 +338,26 @@ function App() {
       );
     }
 
+    if (exercise.type === "pao-ladder") {
+      return (
+        <PaoLadderQuiz
+          exercise={exercise}
+          onAnswer={answerPaoLadder}
+          onReveal={() => setExercise({ ...exercise, revealed: true })}
+        />
+      );
+    }
+
+    if (exercise.type === "pao-ladder-result") {
+      return (
+        <PaoLadderResult
+          exercise={exercise}
+          onAgain={() => startPaoLadder(exercise.levelId)}
+          onTrain={() => navigate("train")}
+        />
+      );
+    }
+
     if (exercise.type === "remaining-question") {
       return (
         <RemainingQuestionScreen
@@ -330,6 +413,7 @@ function App() {
       return (
         <TrainView
           onStartDemo={startPaoDemo}
+          onStartLadder={startPaoLadder}
           onStartSequence={startSequenceTraining}
           onStartRemaining={startRemainingPractice}
         />
@@ -435,10 +519,12 @@ export function TodayView({
 
 export function TrainView({
   onStartDemo,
+  onStartLadder,
   onStartSequence,
   onStartRemaining,
 }: {
   onStartDemo: () => void;
+  onStartLadder: (levelId: PaoLadderLevel["id"]) => void;
   onStartSequence: (cardCount: number) => void;
   onStartRemaining: () => void;
 }) {
@@ -446,6 +532,27 @@ export function TrainView({
     <>
       <p className="eyebrow">训练模式</p>
       <h2>选择练习</h2>
+      <section className="ladder-entry" aria-labelledby="ladder-title">
+        <div>
+          <h3 id="ladder-title">阶梯训练：领域+数字→人物</h3>
+          <p className="quiet">
+            只看领域、数字和数字钩子，回答对应人物；花色、动作、物品不作为题目线索。
+          </p>
+        </div>
+        <div className="ladder-level-grid">
+          {PAO_LADDER_LEVELS.map((level) => (
+            <button
+              className="secondary ladder-level-button"
+              key={level.id}
+              onClick={() => onStartLadder(level.id)}
+              type="button"
+            >
+              <span>{level.name}</span>
+              <small>{level.ranks.join(" / ")}</small>
+            </button>
+          ))}
+        </div>
+      </section>
       <div className="mode-grid">
         <button className="secondary" type="button" onClick={onStartDemo}>
           5 张 PAO 快速演示
@@ -466,6 +573,115 @@ export function TrainView({
       <p className="notice">
         当前默认先训练一副牌；牌组规格已经在 domain 层保留到两副牌扩展点。
       </p>
+    </>
+  );
+}
+
+export function PaoLadderQuiz({
+  exercise,
+  onReveal,
+  onAnswer,
+}: {
+  exercise: Extract<ExerciseState, { type: "pao-ladder" }>;
+  onReveal: () => void;
+  onAnswer: (remembered: boolean) => void;
+}) {
+  const item = exercise.items[exercise.index];
+
+  if (!item) {
+    return (
+      <>
+        <p className="eyebrow">阶梯训练</p>
+        <h2>当前等级没有可训练条目</h2>
+      </>
+    );
+  }
+
+  return (
+    <>
+      <p className="eyebrow">
+        阶梯训练 {exercise.index + 1} / {exercise.items.length}
+      </p>
+      <h2>{item.level.name}</h2>
+      <div className="ladder-quiz">
+        <div className="ladder-prompt" aria-label="题目线索">
+          <div className="ladder-cue">
+            <span>领域</span>
+            <strong>{item.domain}</strong>
+          </div>
+          <div className="ladder-cue">
+            <span>数字</span>
+            <strong>{item.rank}</strong>
+          </div>
+          <div className="ladder-hook">
+            <span>数字钩子</span>
+            <strong>{item.numberHook}</strong>
+          </div>
+        </div>
+        {exercise.revealed ? (
+          <div className="ladder-answer">
+            <span>人物</span>
+            <strong>{item.persona}</strong>
+            {item.reason ? <p>{item.reason}</p> : null}
+            <small>原始牌面：{labelForFace(item.faceId)}</small>
+          </div>
+        ) : (
+          <p className="quiet compact-copy">
+            先在脑中回答人物，再揭晓答案做自评。
+          </p>
+        )}
+      </div>
+      <div className="ladder-progress" aria-label="当前自评统计">
+        <Metric label="已记住" value={exercise.remembered} />
+        <Metric label="没记住" value={exercise.missed} />
+        <Metric label="剩余" value={exercise.items.length - exercise.index - 1} />
+      </div>
+      <div className="actions">
+        {exercise.revealed ? (
+          <>
+            <button className="primary" type="button" onClick={() => onAnswer(true)}>
+              我记住了
+            </button>
+            <button className="secondary" type="button" onClick={() => onAnswer(false)}>
+              没记住
+            </button>
+          </>
+        ) : (
+          <button className="primary" type="button" onClick={onReveal}>
+            揭晓答案
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
+export function PaoLadderResult({
+  exercise,
+  onAgain,
+  onTrain,
+}: {
+  exercise: Extract<ExerciseState, { type: "pao-ladder-result" }>;
+  onAgain: () => void;
+  onTrain: () => void;
+}) {
+  return (
+    <>
+      <p className="eyebrow">阶梯训练结果</p>
+      <h2>{exercise.levelName}</h2>
+      <div className="stat-grid">
+        <Metric label="总题数" value={exercise.total} />
+        <Metric label="已记住" value={exercise.remembered} />
+        <Metric label="没记住" value={exercise.missed} />
+      </div>
+      <div className="actions">
+        <button className="primary" type="button" onClick={onAgain}>
+          再练本级
+        </button>
+        <button className="secondary" type="button" onClick={onTrain}>
+          返回训练模式
+        </button>
+      </div>
     </>
   );
 }
