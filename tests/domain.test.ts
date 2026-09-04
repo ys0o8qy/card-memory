@@ -13,10 +13,15 @@ import {
 } from "../src/domain/pao";
 import {
   calculateRemainingCards,
+  cardCountForLevel,
+  DEFAULT_TRAINING_PLAN,
   recommendNextTraining,
   scoreSequence,
 } from "../src/domain/scoring";
-import { createMemoryRepository } from "../src/domain/storage";
+import {
+  createLocalStorageRepository,
+  createMemoryRepository,
+} from "../src/domain/storage";
 
 describe("card deck domain", () => {
   it("creates a standard 54-card deck", () => {
@@ -122,6 +127,48 @@ describe("training scoring domain", () => {
 
     expect(recommendation.recommendedLevelId).toBe("PAO_REVIEW");
     expect(recommendation.weakEntities[0].entityId).toBe("heart_2");
+    expect(recommendation.didAdvance).toBe(false);
+  });
+
+  it("advances from L3 to real L4 with 54-card exercise", () => {
+    expect(DEFAULT_TRAINING_PLAN.levels.map((level) => level.id)).toEqual([
+      "L1",
+      "L2",
+      "L3",
+      "L4",
+    ]);
+    expect(cardCountForLevel("L3")).toBe(27);
+    expect(cardCountForLevel("L4")).toBe(54);
+
+    const recommendation = recommendNextTraining({
+      currentLevelId: "L3",
+      history: [
+        { metrics: { sequenceAccuracy: 0.9 } },
+        { metrics: { sequenceAccuracy: 0.88 } },
+        { metrics: { sequenceAccuracy: 0.85 } },
+      ],
+      weakStats: [],
+    });
+
+    expect(recommendation.recommendedLevelId).toBe("L4");
+    expect(recommendation.recommendedExercise.cardCount).toBe(54);
+    expect(recommendation.didAdvance).toBe(true);
+  });
+
+  it("keeps L4 as the top level instead of dangling next ids", () => {
+    const recommendation = recommendNextTraining({
+      currentLevelId: "L4",
+      history: [
+        { metrics: { sequenceAccuracy: 0.9 } },
+        { metrics: { sequenceAccuracy: 0.9 } },
+        { metrics: { sequenceAccuracy: 0.9 } },
+      ],
+      weakStats: [],
+    });
+
+    expect(recommendation.recommendedLevelId).toBe("L4");
+    expect(recommendation.recommendedExercise.cardCount).toBe(54);
+    expect(recommendation.didAdvance).toBe(false);
   });
 });
 
@@ -242,6 +289,47 @@ describe("pao and persistence domain", () => {
 
     expect(repository.getState().paoOverrides[0].persona).toBe("测试人物");
     expect(repository.listSessions().items[0].id).toBe("session_1");
+    expect(repository.getState().userPreferences.currentDifficultyLevel).toBe(
+      "L2",
+    );
+  });
+});
+
+describe("localStorage repository hardening", () => {
+  it("resets safely when stored JSON is corrupt", () => {
+    const values = new Map<string, string>([
+      ["card-memory-training-state", "{not-json"],
+    ]);
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        values.set(key, value);
+      },
+      removeItem: (key: string) => {
+        values.delete(key);
+      },
+    };
+
+    const repository = createLocalStorageRepository(storage);
+    expect(repository.getState().userPreferences.currentDifficultyLevel).toBe(
+      "L1",
+    );
+    expect(values.has("card-memory-training-state")).toBe(false);
+  });
+
+  it("falls back to memory when setItem throws without crashing", () => {
+    const storage = {
+      getItem: () => null,
+      setItem: () => {
+        throw new Error("QuotaExceededError");
+      },
+      removeItem: () => undefined,
+    };
+
+    const repository = createLocalStorageRepository(storage);
+    expect(() =>
+      repository.savePreferences({ currentDifficultyLevel: "L2" }),
+    ).not.toThrow();
     expect(repository.getState().userPreferences.currentDifficultyLevel).toBe(
       "L2",
     );
