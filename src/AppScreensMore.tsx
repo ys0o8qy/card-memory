@@ -1,0 +1,1 @@
+@file:///workspace/card-memory-qa/src/AppScreensMore.tsx
