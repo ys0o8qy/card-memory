@@ -1,10 +1,8 @@
 import {
-  faceIdFromCardId,
   getFaceById,
   labelForFace,
   STANDARD_DECK_SPEC,
   type CardInstance,
-  type DeckSpec,
   type Rank,
 } from "./cards";
 
@@ -86,11 +84,20 @@ export interface TrainingRecommendation {
   recommendedExercise: Record<string, unknown>;
   reason: string;
   weakEntities: CardSkillStats[];
+  didAdvance: boolean;
+}
+
+export interface TrainingPlanLevel {
+  id: string;
+  displayName: string;
+  minMetrics: Record<string, number>;
+  nextLevelId?: string;
+  fallbackLevelId?: string;
 }
 
 export const DEFAULT_TRAINING_PLAN = Object.freeze({
   id: "default_training_path",
-  version: "1",
+  version: "2",
   levels: Object.freeze([
     {
       id: "L1",
@@ -112,8 +119,25 @@ export const DEFAULT_TRAINING_PLAN = Object.freeze({
       nextLevelId: "L4",
       fallbackLevelId: "L2",
     },
-  ]),
+    {
+      id: "L4",
+      displayName: "54 张全副训练",
+      minMetrics: { sequenceAccuracy: 0.75 },
+      fallbackLevelId: "L3",
+    },
+  ] as TrainingPlanLevel[]),
 });
+
+export function cardCountForLevel(levelId: string): number {
+  switch (levelId) {
+    case "L3":
+      return 27;
+    case "L4":
+      return 54;
+    default:
+      return 13;
+  }
+}
 
 export function scoreSequence(
   expectedCardIds: readonly string[],
@@ -298,6 +322,7 @@ export function recommendNextTraining({
       },
       reason: `先复习 ${weakEntities.map((stat) => labelForFace(stat.entityId)).join("、")}。`,
       weakEntities,
+      didAdvance: false,
     };
   }
 
@@ -310,8 +335,15 @@ export function recommendNextTraining({
       window.every((entry) => (entry.metrics?.[metric] ?? 0) >= minimum),
     );
 
+  const nextLevelId = currentLevel.nextLevelId;
+  const nextLevelExists =
+    typeof nextLevelId === "string" &&
+    plan.levels.some((level) => level.id === nextLevelId);
+
   const recommendedLevelId = meetsCriteria
-    ? currentLevel.nextLevelId ?? currentLevel.id
+    ? nextLevelExists
+      ? nextLevelId
+      : currentLevel.id
     : currentLevel.fallbackLevelId ?? currentLevel.id;
 
   return {
@@ -324,12 +356,19 @@ export function recommendNextTraining({
       deckSpec: STANDARD_DECK_SPEC,
       gameProfileId: "generic",
       focusWeakCards: false,
-      cardCount: recommendedLevelId === "L3" ? 27 : 13,
+      cardCount: cardCountForLevel(recommendedLevelId),
       recallInputMode: "sort_cards",
     },
     reason: meetsCriteria
-      ? "最近 3 次达到晋级标准，推荐提高难度。"
+      ? nextLevelExists && recommendedLevelId !== currentLevel.id
+        ? "最近 3 次达到晋级标准，推荐提高难度。"
+        : "已达最高难度，继续巩固全副牌训练。"
       : "继续当前难度，先稳定准确率。",
     weakEntities: [],
+    didAdvance: Boolean(
+      meetsCriteria &&
+        nextLevelExists &&
+        recommendedLevelId !== currentLevel.id,
+    ),
   };
 }

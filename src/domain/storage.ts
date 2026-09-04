@@ -88,16 +88,39 @@ export function createMemoryRepository(
 }
 
 export function createLocalStorageRepository(
-  storage = globalThis.localStorage,
+  storage: Pick<Storage, "getItem" | "setItem" | "removeItem"> = globalThis.localStorage,
   key = "card-memory-training-state",
 ): Repository {
+  let memoryFallback: PersistedAppState | null = null;
+
   return createRepositoryAdapter({
     read: () => {
-      const raw = storage.getItem(key);
-      return raw ? migrateState(JSON.parse(raw) as Partial<PersistedAppState>) : cloneState(DEFAULT_STATE);
+      if (memoryFallback) {
+        return cloneState(memoryFallback);
+      }
+      try {
+        const raw = storage.getItem(key);
+        if (!raw) {
+          return cloneState(DEFAULT_STATE);
+        }
+        return migrateState(JSON.parse(raw) as Partial<PersistedAppState>);
+      } catch {
+        try {
+          storage.removeItem(key);
+        } catch {
+          // Ignore cleanup failures on corrupt/unavailable storage.
+        }
+        return cloneState(DEFAULT_STATE);
+      }
     },
     write: (nextState) => {
-      storage.setItem(key, JSON.stringify(nextState));
+      try {
+        storage.setItem(key, JSON.stringify(nextState));
+        memoryFallback = null;
+      } catch {
+        // QuotaExceeded or unavailable storage: keep working in memory.
+        memoryFallback = cloneState(nextState);
+      }
     },
   });
 }
@@ -170,9 +193,13 @@ function createRepositoryAdapter(driver: {
     },
 
     importState(nextState) {
-      const parsed =
-        typeof nextState === "string" ? JSON.parse(nextState) : nextState;
-      driver.write(migrateState(parsed as Partial<PersistedAppState>));
+      try {
+        const parsed =
+          typeof nextState === "string" ? JSON.parse(nextState) : nextState;
+        driver.write(migrateState(parsed as Partial<PersistedAppState>));
+      } catch {
+        driver.write(cloneState(DEFAULT_STATE));
+      }
     },
   };
 }
