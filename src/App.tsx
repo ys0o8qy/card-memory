@@ -1,1 +1,1 @@
-LOADING_FROM_DISK_VIA_HELPER
+file:///workspace/card-memory-qa/src/App.tsx
